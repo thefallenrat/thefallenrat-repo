@@ -1,0 +1,125 @@
+#!/bin/bash
+#shellcheck disable=SC2154
+readonly argv0=thefallenrat
+readonly argv1=$argv0-repo
+readonly REPODEST=${REPODEST:-$HOME/git-projects/$argv1}
+readonly url=git@github.com
+readonly PS4='+(${BASH_SOURCE}:${LINENO}): ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
+
+declare -i push=0 clean=0 editcommit=0 needgit=0 signme=0 update=0 add=0 dstatus=0
+
+gitpackages() {
+      msg "Finding git packages..."      
+      packages=$(pacman -Slq $argv1 | grep git | sort -u | paste -sd " ")
+      if [[ -z $packages ]]; then
+            msg2 "No git packages found!"
+      else
+            msg2 "Founded!"
+      fi
+}
+
+findunsigned() {
+      msg "Finding unsigned packages..."
+      comm -23 <(ls -1 | grep xz | grep -v artix) <(ls -1 | grep xz | grep -v artix | grep -B1 sig | sort)
+}
+
+usage() {
+      plain "usage: $argv0 [-pchguas] [--commit] [--status]"
+      exit 1
+}
+
+readonly -f gitpackages findunsigned usage
+
+source /usr/share/makepkg/util.sh
+
+if [[ -t 2 ]]; then
+      colorize
+fi
+
+if getopt -T || (($? != 4)); then
+      error "$argv0: util-linux getopt required"
+      exit 22
+fi
+
+longopts=push,commit,clean,needgit,help,update,sign,add,status
+
+if [[ $# -eq 0 ]] ; then
+    error "$argv0: no arguments given"
+    usage
+    exit 0
+fi
+
+if TEMP=$(getopt -o pchguas -l "$longopts" -n "$argv0" -- "$@"); then
+      eval set -- "$TEMP"
+else
+      usage
+fi
+
+while true; do
+      case "$1" in
+            -p|--push)       push=1;                     shift   ;;
+            --commit)        editcommit=1;               shift   ;;
+            -s|--sign)       signme=1;                   shift   ;;
+            -c|--clean)      clean=1;                    shift   ;;
+            -g|--git)        needgit=1;                  shift   ;;
+            -u|--update)     update=1;                   shift   ;;
+            -h|--help)       usage;                      shift   ;;
+            -a|--add)        add=1;                      shift   ;;
+            --status)        dstatus=1;                  shift   ;;
+            --)              shift;break                         ;;
+      esac
+done
+
+if ((dstatus)); then
+      ncdu $REPODEST
+      exit 0
+fi
+
+if ((update)); then
+      if ((needgit)); then
+            gitpackages
+            msg "Updating git packages..."
+            aursync -rfun --repo $argv1 --no-view --no-confirm -- $packages
+      else
+            msg "Updating packages"
+            aursync -rfun --repo $argv1 --no-view --no-confirm
+      fi
+      rm $(ls -1 $REPODEST | grep '~$' | paste -sd " ") 2> /dev/null
+fi
+
+if ((clean)); then
+      paccache -rvk 1 -c $REPODEST/
+fi
+
+if ((signme)); then
+      for unsignedpackages in `findunsigned`; do
+            msg "Signing packages..."
+            gpg --verbose -i --detach-sign --no-armor $unsignedpackages;
+      done
+fi
+
+if ((add)); then
+      msg "Updating databases..."
+      repose -vf $argv1 -r $REPODEST/
+fi
+
+if ((push)); then
+      msg "Re-initiliazing git..."
+      rm -rf .git
+      git init
+      git remote add origin $url:$argv0/$argv1.git
+
+      # Commit
+      git add .
+
+      if ((editcommit)); then
+            git commit
+      else
+            git commit -m "repo-update: $(date -u +%d-%m-%Y)"
+      fi
+
+      # Push the commit
+      git push -f origin master
+fi
+
+msg "Done!"
